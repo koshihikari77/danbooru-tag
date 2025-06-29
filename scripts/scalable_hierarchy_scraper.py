@@ -8,6 +8,7 @@ import time
 import json
 import logging
 import os
+import fnmatch
 from bs4 import BeautifulSoup
 from typing import List, Dict, Optional, Set
 from dataclasses import dataclass
@@ -210,7 +211,6 @@ class ScalableHierarchyScraper:
         
         # パターンマッチングチェック
         if self.config.group_name_patterns is not None:
-            import fnmatch
             matched = False
             for pattern in self.config.group_name_patterns:
                 if fnmatch.fnmatch(group_name.lower(), pattern.lower()):
@@ -220,6 +220,119 @@ class ScalableHierarchyScraper:
                 return False, f"パターン不一致"
         
         return True, ""
+    
+    def _parse_li_element(self, li_element) -> Optional[Dict]:
+        """li要素を解析し、テキスト、リンク、ネストulの情報を抽出する"""
+        
+        # 既に処理済みのli要素はスキップ
+        if li_element.get('processed') == 'true':
+            return None
+
+        text = li_element.get_text(strip=True)
+        if not text:
+            return None
+
+        # ネストしたulのテキストを除去して正確なli文字列を取得
+        nested_ul = li_element.find('ul')  # 子要素のul
+        sibling_ul = li_element.find_next_sibling('ul')  # 兄弟要素のul
+        
+        # 既に処理された兄弟ulはスキップ
+        if sibling_ul and sibling_ul.get('processed') == 'true':
+            logger.debug(f"    [兄弟ulデバッグ] 既に処理済みのulをスキップ: {li_element.get_text(strip=True)[:50]}...")
+            sibling_ul = None
+        
+        # テキスト抽出ロジック
+        if nested_ul:
+            # より安全なテキスト抽出: liの直接の子テキストのみを取得
+            clean_text = ""
+            for child in li_element.children:
+                if hasattr(child, 'name') and child.name == 'ul':
+                    continue  # ul要素はスキップ
+                if hasattr(child, 'strip'):
+                    clean_text += child.strip()
+                elif hasattr(child, 'get_text'):
+                    clean_text += child.get_text(strip=True)
+            clean_text = clean_text.strip()
+            
+            # デバッグ出力
+            if clean_text and len(clean_text) > 0:
+                logger.debug(f"    [階層デバッグ] 親要素テキスト抽出: '{clean_text}' (nested_ul有り)")
+        elif sibling_ul:
+            # 兄弟ulの場合、テキスト除去は不要（別要素のため）
+            clean_text = text.strip()
+        else:
+            clean_text = text
+
+        # リンク情報の抽出
+        link_info = None
+        link_tag = li_element.find('a')
+        if link_tag and 'href' in link_tag.attrs:
+            link_info = {
+                'text': link_tag.get_text(strip=True),
+                'href': link_tag['href']
+            }
+
+        return {
+            'clean_text': clean_text,
+            'link_info': link_info,
+            'nested_ul': nested_ul,
+            'sibling_ul': sibling_ul,
+            'item_name': link_info['text'] if link_info else clean_text,
+            'has_link': link_info is not None,
+            'has_nested_list': nested_ul is not None or sibling_ul is not None
+        }
+    
+    def _process_link_item(self, parsed_li: Dict, current_path: List[str], result: Dict, apply_target_filter: bool) -> bool:
+        """リンク付きアイテムを処理する"""
+        link_text = parsed_li['link_info']['text']
+        href = parsed_li['link_info']['href']
+        full_path = current_path + [link_text]
+        
+        # デバッグ出力：パス構築の詳細
+        logger.debug(f"    [パスデバッグ] アイテム='{link_text}', current_path={' -> '.join(current_path)}, full_path={' -> '.join(full_path)}")
+        
+        # 統合処理判定（should_process_groupで処理済みのため、ここでは不要）
+        
+        # want.md新仕様: リンク追跡制限チェック  
+        should_follow = self.should_follow_link(link_text)
+        
+        # デバッグ: animal earsのような項目の詳細
+        if 'animal ears' in link_text.lower():
+            logger.debug(f"    [分析] {link_text}: has_nested={parsed_li['has_nested_list']}, has_link=True, tag_group_in_name={'tag group' in link_text.lower()}")
+            if parsed_li['nested_ul'] is not None:
+                logger.debug(f"        [ネスト詳細] child nested_ul found: {len(parsed_li['nested_ul'].find_all('li'))} nested items")
+            if parsed_li['sibling_ul'] is not None:
+                logger.debug(f"        [兄弟詳細] sibling ul found: {len(parsed_li['sibling_ul'].find_all('li'))} items")
+        
+        # 統一アイテム処理
+        item_data = self._create_item_data(
+            link_text, href if should_follow else None, full_path, 
+            has_link=True, has_nested_list=parsed_li['has_nested_list'], should_follow=should_follow
+        )
+        self._add_item(result, link_text, item_data)
+        return True
+    
+    def _process_text_item(self, parsed_li: Dict, current_path: List[str], result: Dict, apply_target_filter: bool) -> bool:
+        """非リンクアイテムを処理する"""
+        clean_text = parsed_li['clean_text']
+        full_path = current_path + [clean_text]
+        
+        # 統合処理判定（メインページでのみ）
+        if apply_target_filter:
+            should_process, skip_reason = self.should_process_group(
+                clean_text, index=0, processed_count=0, item_path=full_path
+            )
+            if not should_process:
+                logger.debug(f"統合フィルタでスキップ: {clean_text} - {skip_reason}")
+                return False
+        
+        # 統一アイテム処理（リンクなし）
+        item_data = self._create_item_data(
+            clean_text, None, full_path, has_link=False, 
+            has_nested_list=parsed_li['has_nested_list'], should_follow=False
+        )
+        self._add_item(result, clean_text, item_data)
+        return True
     
     def _remove_post_page_noise(self, soup: BeautifulSoup):
         """postページ特有の不要な要素を除去"""
@@ -424,148 +537,70 @@ class ScalableHierarchyScraper:
     
     def _process_list_recursive(self, ul_element, current_path: List[str], 
                                result: Dict, depth: int = 0, apply_target_filter: bool = True):
-        """再帰的にリスト構造を処理"""
+        """再帰的にリスト構造を処理（リファクタリング版）"""
         if depth > self.config.max_depth:
             logger.warning(f"  最大深度 {self.config.max_depth} に到達、処理停止")
             return
         
         for li in ul_element.find_all('li', recursive=False):
-            # 既に処理済みのli要素はスキップ
-            if li.get('processed') == 'true':
+            # li要素を解析
+            parsed_li = self._parse_li_element(li)
+            if not parsed_li:
                 continue
                 
-            text = li.get_text(strip=True)
-            if not text:
-                continue
-            
-            # ネストしたulのテキストを除去して正確なli文字列を取得
-            # 子要素のulと兄弟要素のulの両方をチェック
-            nested_ul = li.find('ul')  # 子要素のul
-            sibling_ul = li.find_next_sibling('ul')  # 兄弟要素のul
-            
-            # 既に処理された兄弟ulはスキップ
-            if sibling_ul and sibling_ul.get('processed') == 'true':
-                logger.debug(f"    [兄弟ulデバッグ] 既に処理済みのulをスキップ: {li.get_text(strip=True)[:50]}...")
-                sibling_ul = None
-            
-            if nested_ul:
-                # より安全なテキスト抽出: liの直接の子テキストのみを取得
-                clean_text = ""
-                for child in li.children:
-                    if hasattr(child, 'name') and child.name == 'ul':
-                        continue  # ul要素はスキップ
-                    if hasattr(child, 'strip'):
-                        clean_text += child.strip()
-                    elif hasattr(child, 'get_text'):
-                        clean_text += child.get_text(strip=True)
-                clean_text = clean_text.strip()
-                
-                # デバッグ出力
-                if clean_text and len(clean_text) > 0:
-                    logger.debug(f"    [階層デバッグ] 親要素テキスト抽出: '{clean_text}' (nested_ul有り)")
-            elif sibling_ul:
-                # 兄弟ulの場合、テキスト除去は不要（別要素のため）
-                clean_text = text.strip()
-            else:
-                clean_text = text
-            
+            # 処理済みマーク
+            li['processed'] = 'true'
+
             # 無視要素チェック
-            if self.should_ignore_element(clean_text):
-                result['ignored_elements'].append(clean_text)
-                logger.debug(f"  要素無視: {clean_text}")
+            if self.should_ignore_element(parsed_li['clean_text']):
+                result['ignored_elements'].append(parsed_li['clean_text'])
+                logger.debug(f"  要素無視: {parsed_li['clean_text']}")
                 continue
             
-            # リンクチェック
-            link = li.find('a')
-            if link and 'href' in link.attrs:
-                href = link['href']
-                link_text = link.get_text(strip=True)
-                full_path = current_path + [link_text]
-                
-                # デバッグ出力：パス構築の詳細
-                logger.debug(f"    [パスデバッグ] アイテム='{link_text}', current_path={' -> '.join(current_path)}, full_path={' -> '.join(full_path)}")
-                
-                # pathベースのtarget_groupsフィルタリング
-                if apply_target_filter and self.config.target_groups is not None:
-                    path_matches_target = False
-                    for target in self.config.target_groups:
-                        # より厳密なマッチング：完全パス内にtargetが含まれている必要がある
-                        full_path_str = ' -> '.join(full_path).lower()
-                        if target.lower() in full_path_str:
-                            path_matches_target = True
-                            break
-                    
-                    # 対象外のpathはスキップ
-                    if not path_matches_target:
-                        logger.debug(f"  target_groups フィルタでスキップ: {link_text} (path: {' -> '.join(full_path)})")
-                        continue
-                
-                # want.md新仕様: リンク追跡制限チェック  
-                should_follow = self.should_follow_link(link_text)
-                
-                # ネストしたリストの存在判定（子要素 or 兄弟要素）
-                has_nested_list = nested_ul is not None or sibling_ul is not None
-                
-                
-                # デバッグ: animal earsのような項目の詳細
-                if 'animal ears' in link_text.lower():
-                    logger.debug(f"    [分析] {link_text}: has_nested={has_nested_list}, has_link=True, tag_group_in_name={'tag group' in link_text.lower()}")
-                    if nested_ul is not None:
-                        logger.debug(f"        [ネスト詳細] child nested_ul found: {len(nested_ul.find_all('li'))} nested items")
-                    if sibling_ul is not None:
-                        logger.debug(f"        [兄弟詳細] sibling ul found: {len(sibling_ul.find_all('li'))} items")
-                
-                # 統一アイテム処理
-                item_data = self._create_item_data(
-                    link_text, href if should_follow else None, full_path, 
-                    has_link=True, has_nested_list=has_nested_list, should_follow=should_follow
-                )
-                self._add_item(result, link_text, item_data)
+            # リンクありの場合
+            if parsed_li['has_link']:
+                processed = self._process_link_item(parsed_li, current_path, result, apply_target_filter)
             else:
-                full_path = current_path + [clean_text]
-                
-                # 統合処理判定（メインページでのみ）
-                if apply_target_filter:
-                    should_process, skip_reason = self.should_process_group(
-                        clean_text, index=0, processed_count=0, item_path=full_path
-                    )
-                    if not should_process:
-                        logger.debug(f"統合フィルタでスキップ: {clean_text} - {skip_reason}")
-                        continue
-                
-                # 統一アイテム処理（リンクなし）
-                has_nested_list = nested_ul is not None or sibling_ul is not None
-                item_data = self._create_item_data(
-                    clean_text, None, full_path, has_link=False, 
-                    has_nested_list=has_nested_list, should_follow=False
-                )
-                self._add_item(result, clean_text, item_data)
+                # リンクなしの場合
+                processed = self._process_text_item(parsed_li, current_path, result, apply_target_filter)
             
-            # ネストしたリストを再帰処理（子要素 or 兄弟要素）
-            if nested_ul:
-                nested_path = current_path + [clean_text]
-                self._process_list_recursive(nested_ul, nested_path, result, depth + 1, apply_target_filter=apply_target_filter)
-            elif sibling_ul:
-                # 兄弟ulの場合、この要素が実際に兄弟ulの「親」であることを確認
-                # 兄弟ulは現在のliの直後にある場合のみ処理
-                if li.find_next_sibling() == sibling_ul and sibling_ul.get('processed') != 'true':
-                    # 兄弟ul用のパス構築：リンクがある場合はリンクテキストを使用
-                    if link and 'href' in link.attrs:
-                        parent_name = link.get_text(strip=True)
-                    else:
-                        parent_name = clean_text
-                    
-                    nested_path = current_path + [parent_name]
-                    logger.debug(f"    [階層デバッグ] 兄弟ul処理: 親='{parent_name}', パス={' -> '.join(nested_path)}")
-                    
-                    # 兄弟ulを処理する前にマークして重複処理を防ぐ
-                    sibling_ul['processed'] = 'true'
-                    self._process_list_recursive(sibling_ul, nested_path, result, depth + 1, apply_target_filter=apply_target_filter)
-                    # 兄弟ul内のli要素を処理済みとしてマーク（重複処理防止）
-                    for sibling_li in sibling_ul.find_all('li', recursive=False):
-                        sibling_li['processed'] = 'true'
+            if not processed:
+                continue
+            
+            # 再帰処理
+            self._handle_recursive_processing(li, parsed_li, current_path, result, depth, apply_target_filter)
+
+    def _handle_recursive_processing(self, li, parsed_li: Dict, current_path: List[str], 
+                                   result: Dict, depth: int, apply_target_filter: bool):
+        """再帰処理を管理"""
+        nested_ul = parsed_li['nested_ul']
+        sibling_ul = parsed_li['sibling_ul']
+        clean_text = parsed_li['clean_text']
+        
+        # ネストしたリストを再帰処理（子要素 or 兄弟要素）
+        if nested_ul:
+            nested_path = current_path + [clean_text]
+            self._process_list_recursive(nested_ul, nested_path, result, depth + 1, apply_target_filter)
+        elif sibling_ul:
+            # 兄弟ulの場合、この要素が実際に兄弟ulの「親」であることを確認
+            if li.find_next_sibling() == sibling_ul and sibling_ul.get('processed') != 'true':
+                # 兄弟ul用のパス構築：リンクがある場合はリンクテキストを使用
+                if parsed_li['has_link']:
+                    parent_name = parsed_li['link_info']['text']
                 else:
-                    logger.debug(f"    [兄弟ulデバッグ] 兄弟ul処理をスキップ: 直後でないか既に処理済み")
+                    parent_name = clean_text
+                
+                nested_path = current_path + [parent_name]
+                logger.debug(f"    [階層デバッグ] 兄弟ul処理: 親='{parent_name}', パス={' -> '.join(nested_path)}")
+                
+                # 兄弟ulを処理する前にマークして重複処理を防ぐ
+                sibling_ul['processed'] = 'true'
+                self._process_list_recursive(sibling_ul, nested_path, result, depth + 1, apply_target_filter)
+                # 兄弟ul内のli要素を処理済みとしてマーク（重複処理防止）
+                for sibling_li in sibling_ul.find_all('li', recursive=False):
+                    sibling_li['processed'] = 'true'
+            else:
+                logger.debug(f"    [兄弟ulデバッグ] 兄弟ul処理をスキップ: 直後でないか既に処理済み")
     
     def _classify_node(self, name: str, has_link: bool, has_nested_list: bool) -> NodeType:
         """新しい4-way分類システム"""
