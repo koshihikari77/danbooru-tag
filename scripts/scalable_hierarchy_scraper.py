@@ -104,25 +104,6 @@ class ScalableHierarchyScraper:
                 return True
         return False
     
-    def _should_skip_by_target_groups(self, path: List[str], item_name: str, 
-                                    apply_filter: bool = True) -> bool:
-        """target_groupsフィルタリングによるスキップ判定"""
-        if not apply_filter or not self.config.target_groups:
-            return False
-        
-        path_matches_target = False
-        for target in self.config.target_groups:
-            # より厳密なマッチング：完全パス内にtargetが含まれている必要がある
-            full_path_str = ' -> '.join(path).lower()
-            if target.lower() in full_path_str:
-                path_matches_target = True
-                break
-        
-        if not path_matches_target:
-            logger.debug(f"target_groups フィルタでスキップ: {item_name} (path: {' -> '.join(path)})")
-            return True
-        
-        return False
     
     def _create_item_data(self, name: str, url: str, path: List[str], has_link: bool, 
                          has_nested_list: bool, should_follow: bool = False) -> Dict:
@@ -132,6 +113,7 @@ class ScalableHierarchyScraper:
             'url': url,
             'path': path,
             'parent': path[-2] if len(path) >= 2 else None,
+            'depth': len(path),  # 階層深度: パスの長さ = 何階層目か
             'has_nested_list': has_nested_list,
             'classification': self._classify_node(name, has_link, has_nested_list).value,
             'should_follow': should_follow
@@ -181,7 +163,17 @@ class ScalableHierarchyScraper:
 
     def should_process_group(self, group_name: str, index: int, processed_count: int, 
                            item_path: List[str] = None) -> tuple[bool, str]:
-        """範囲指定に基づいてグループを処理すべきかチェック"""
+        """グループを処理すべきかチェック（除外処理、target_groups、範囲指定統合）"""
+        
+        # 除外処理チェック（最優先）
+        if item_path is not None:
+            for path_segment in item_path:
+                if self.should_exclude_section(path_segment):
+                    return False, f"除外パス内（{path_segment}）"
+        
+        # グループ名直接除外チェック
+        if self.should_exclude_section(group_name):
+            return False, f"除外グループ（{group_name}）"
         
         # スキップ数チェック
         if index < self.config.skip_first_n:
@@ -191,22 +183,30 @@ class ScalableHierarchyScraper:
         if self.config.max_groups is not None and processed_count >= self.config.max_groups:
             return False, f"上限到達（{processed_count}/{self.config.max_groups}）"
         
-        # 特定グループ指定チェック - path階層を考慮
+        # target_groupsフィルタチェック（統合）
         if self.config.target_groups is not None:
             # 直接一致チェック
             if group_name in self.config.target_groups:
                 return True, ""
             
-            # pathが提供されている場合、階層的チェック
+            # pathベースマッチング（_should_skip_by_target_groupsから統合）
             if item_path is not None:
                 # pathの中にtarget_groupsのいずれかが含まれている場合は処理対象
+                path_matches_target = False
                 for target_group in self.config.target_groups:
-                    if target_group in item_path:
+                    # より厳密なマッチング：完全パス内にtargetが含まれている必要がある
+                    full_path_str = ' -> '.join(item_path).lower()
+                    if target_group.lower() in full_path_str:
+                        path_matches_target = True
                         logger.debug(f"  階層的処理対象: {group_name} (path: {' -> '.join(item_path)})")
-                        return True, ""
-            
-            # どちらにも該当しない場合は対象外
-            return False, f"対象外グループ"
+                        break
+                
+                if not path_matches_target:
+                    logger.debug(f"target_groups フィルタでスキップ: {group_name} (path: {' -> '.join(item_path)})")
+                    return False, f"対象外グループ"
+            else:
+                # pathがない場合は対象外
+                return False, f"対象外グループ"
         
         # パターンマッチングチェック
         if self.config.group_name_patterns is not None:
@@ -379,17 +379,6 @@ class ScalableHierarchyScraper:
                 text = element.get_text(strip=True)
                 
                 if text:
-                    # セクション除外チェック
-                    if self.should_exclude_section(text):
-                        section_excluded = True
-                        current_section = text
-                        result['excluded_sections'].append(text)
-                        logger.debug(f"  セクション除外: {text}")
-                        continue
-                    else:
-                        section_excluded = False
-                        current_section = text
-                    
                     # スタック調整
                     while current_heading_stack and current_heading_stack[-1]['level'] >= level:
                         current_heading_stack.pop()
@@ -405,20 +394,14 @@ class ScalableHierarchyScraper:
                         for heading in current_heading_stack[:-1]:  # 自分以外の親見出し
                             heading_path.append(heading['text'])
                         heading_path.append(text)
-                        
-                        # target_groupsフィルタをメインページ（base_pathが空）の時のみ適用
-                        should_skip = self._should_skip_by_target_groups(
-                            heading_path, text, apply_filter=(len(base_path) == 0)
+                    
+                        item_data = self._create_item_data(
+                            text, None, heading_path, has_link=False, 
+                            has_nested_list=True, should_follow=False
                         )
-                        
-                        if not should_skip:
-                            item_data = self._create_item_data(
-                                text, None, heading_path, has_link=False, 
-                                has_nested_list=True, should_follow=False
-                            )
-                            self._add_item(result, text, item_data)
+                        self._add_item(result, text, item_data)
             
-            elif element.name == 'ul' and element.parent.name != 'li' and not section_excluded:
+            elif element.name == 'ul' and element.parent.name != 'li' :
                 # 除外されていないセクションのリストのみ処理
                 self._process_list_items_with_exclusion(
                     element, current_path, current_heading_stack, result
@@ -541,9 +524,14 @@ class ScalableHierarchyScraper:
             else:
                 full_path = current_path + [clean_text]
                 
-                # pathベースのtarget_groupsフィルタリング（メインページでのみ）
-                if self._should_skip_by_target_groups(full_path, clean_text, apply_target_filter):
-                    continue
+                # 統合処理判定（メインページでのみ）
+                if apply_target_filter:
+                    should_process, skip_reason = self.should_process_group(
+                        clean_text, index=0, processed_count=0, item_path=full_path
+                    )
+                    if not should_process:
+                        logger.debug(f"統合フィルタでスキップ: {clean_text} - {skip_reason}")
+                        continue
                 
                 # 統一アイテム処理（リンクなし）
                 has_nested_list = nested_ul is not None or sibling_ul is not None
@@ -760,6 +748,7 @@ class ScalableHierarchyScraper:
                         'url': item.get('url'),
                         'path': normalized_path,
                         'parent': item.get('parent', '').lower() if item.get('parent') else None,
+                        'depth': item.get('depth', len(normalized_path)),  # 階層深度を保持
                         'has_nested_list': item.get('has_nested_list', False),
                         'classification': item.get('classification'),
                         'should_follow': item.get('should_follow', False)
@@ -781,6 +770,7 @@ class ScalableHierarchyScraper:
                 'url': item.get('url'),
                 'path': normalized_path,
                 'parent': item.get('parent', '').lower() if item.get('parent') else None,
+                'depth': item.get('depth', len(normalized_path)),  # 階層深度を保持
                 'has_nested_list': item.get('has_nested_list', False),
                 'classification': item.get('classification'),
                 'should_follow': item.get('should_follow', False)
