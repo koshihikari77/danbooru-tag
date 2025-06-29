@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(uv run:*)",
+      "Bash(ls:*)",
+      "Bash(mkdir:*)",
+      "Bash(mv:*)",
+      "Bash(tree:*)",
+      "Bash(find:*)",
+      "Bash(true)",
+      "Bash(grep:*)",
+      "Bash(uv add:*)",
+      "Bash(sed:*)",
+      "WebFetch(domain:danbooru.donmai.us)",
+      "WebFetch(domain:pybooru.readthedocs.io)",
+      "Bash(rg:*)",
+      "Bash(rm:*)",
+      "Bash(/dev/null)"
+    ],
+    "deny": []
+  }
+}

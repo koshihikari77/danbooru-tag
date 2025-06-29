@@ -1,0 +1,15 @@
+[project]
+name = "danbooru-tag"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "beautifulsoup4>=4.13.4",
+    "lxml>=6.0.0",
+    "requests>=2.32.4",
+    "selenium>=4.33.0",
+    "webdriver-manager>=4.0.2",
+    "undetected-chromedriver>=3.5.5",
+    "pybooru>=4.2.2",
+]
