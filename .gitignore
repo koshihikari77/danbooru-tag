@@ -5,6 +5,9 @@ build/
 dist/
 wheels/
 *.egg-info
-
+*.pkl
+data/
+docs/
+tmp/
 # Virtual environments
 .venv

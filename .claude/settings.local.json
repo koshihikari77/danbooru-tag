@@ -16,7 +16,11 @@
       "WebFetch(domain:pybooru.readthedocs.io)",
       "Bash(rg:*)",
       "Bash(rm:*)",
-      "Bash(/dev/null)"
+      "Bash(/dev/null)",
+      "mcp__serena__get_symbols_overview",
+      "mcp__serena__list_dir",
+      "WebFetch(domain:docs.llamaindex.ai)",
+      "mcp__serena__write_memory"
     ],
     "deny": []
   }

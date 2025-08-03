@@ -12,4 +12,13 @@ dependencies = [
     "webdriver-manager>=4.0.2",
     "undetected-chromedriver>=3.5.5",
     "pybooru>=4.2.2",
+    "pyarrow>=20.0.0",
+    "pandas>=2.3.0",
+    "datasets>=3.6.0",
+    "polars>=1.31.0",
+    "llama-index>=0.12.52",
+    "llama-index-experimental>=0.5.5",
+    "llama-index-llms-anthropic>=0.7.6",
+    "llama-index-embeddings-huggingface>=0.5.5",
+    "sentence-transformers>=5.0.0",
 ]
