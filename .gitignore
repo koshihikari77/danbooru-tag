@@ -6,6 +6,10 @@ dist/
 wheels/
 *.egg-info
 *.pkl
-tmp/
+workspace/
 # Virtual environments
 .venv
+*/old
+.ipynb_checkpoints/
+.opencode/
+data

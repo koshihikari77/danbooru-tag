@@ -20,7 +20,14 @@
       "mcp__serena__get_symbols_overview",
       "mcp__serena__list_dir",
       "WebFetch(domain:docs.llamaindex.ai)",
-      "mcp__serena__write_memory"
+      "mcp__serena__write_memory",
+      "Bash(python3:*)",
+      "Bash(~/.local/bin/uv run python:*)",
+      "Bash(pip3 list:*)",
+      "Bash(wc:*)",
+      "Bash(git -C /notebooks/danbooru-tag log:*)",
+      "Bash(file:*)",
+      "Bash(git checkout:*)"
     ],
     "deny": []
   }
